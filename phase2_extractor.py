@@ -87,6 +87,8 @@ EXTRACTION_FIELDS = PHASE2_FIELDS + [
     "web_about", "web_mission", "web_vision", "web_description",
     "web_amenities", "web_special_services", "web_faqs",
     "web_team", "web_testimonials", "web_seo_keywords",
+    "web_pricing", "web_hours_structured", "web_certifications", "web_identity",
+    "web_location_lat", "web_location_lng", "web_location_source",
     "web_pages_scraped", "web_extraction_status",
 ]
 
@@ -357,6 +359,397 @@ async def scrape_maps_detail(page, maps_url: str, name: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# IDENTITY / REGULATORY REGEX CONSTANTS  (from site-extractor-v3)
+# ══════════════════════════════════════════════════════════════════════════════
+
+NPI_RE             = re.compile(r"\bNPI[\s:#\-]*(\d{10})\b", re.I)
+CMS_ID_RE          = re.compile(r"\b(?:CMS|Medicare|Medicaid|CCN|Provider(?:\s+ID)?|Certification(?:\s+Number)?)[\s:#\-]*(\d{6,10})\b", re.I)
+EIN_RE             = re.compile(r"\b(\d{2}-\d{7})\b")
+BED_RE             = re.compile(r"\b(\d{1,4})\s*(?:licensed\s+)?(?:bed|unit|room|suite)s?\b", re.I)
+CAPACITY_RE        = re.compile(r"\b(?:capacity|serving|admits?)\s+(?:of\s+)?(?:up\s+to\s+)?(\d{1,4})\s*(?:patients?|residents?|clients?|members?|beds?)\b", re.I)
+FOUNDED_RE         = re.compile(r"\b(?:founded|established|since|est\.?|serving\s+since|opened|incorporated)\s*(?:in\s+)?(\b(?:19|20)\d{2}\b)", re.I)
+EMPLOYEE_RE        = re.compile(r"\b([\d,]+\+?)\s*(?:employees?|staff(?:\s+members?)?|caregivers?|team\s+members?|providers?|clinicians?|professionals?|associates?)\b", re.I)
+STAR_RATING_RE     = re.compile(r"\b([1-5])[\s\-]*(?:star|★|☆)(?:[\s\-]*(?:rating|rated|quality))?\b", re.I)
+SERVICE_AREA_RE    = re.compile(r"\bserving\s+(?:the\s+)?([A-Za-z][a-zA-Z\s\-]{2,40}(?:,\s*[A-Z]{2})?)\s*(?:area|region|county|metro|community|communities|surrounding)\b", re.I)
+ACCREDITATION_BODY_RE = re.compile(r"\b(Joint\s+Commission|JCAHO?|TJC|CARF|ACHC|CHAP|DNV(?:\s+GL)?|URAC|NCQA|CAHPS|ISO\s*\d{4,5}(?::\d{4})?|SOC\s*2|HIPAA|PCI[\s\-]DSS|BBB|Better\s+Business\s+Bureau|A\+\s*(?:rated|BBB)?|Leapfrog|CMS\s+5[\s\-]?Star|OSHA|ANSI|AABB|CAP\s+accredited|Magnet\s+(?:status|recognized|hospital)|AAAHC)\b", re.I)
+PROVIDER_TYPE_RE   = re.compile(r"\b(hospice|skilled\s+nursing\s+(?:facility|home)|SNF|nursing\s+home|assisted\s+living(?:\s+facility)?|ALF|long[\s\-]term\s+(?:care|acute\s+care)|LTCH|LTAC|inpatient\s+rehab(?:ilitation)?(?:\s+facility)?|IRF|home\s+health\s+(?:agency|aide|care)|HHA|PACE|memory\s+care|behavioral\s+health|adult\s+day(?:\s+(?:health|care|program))?|palliative\s+care|continuing\s+care(?:\s+retirement)?\s+community|CCRC|independent\s+living|group\s+home|residential\s+care|sub[\s\-]?acute(?:\s+(?:care|rehab))?|transitional\s+care(?:\s+unit)?|TCU)\b", re.I)
+MEDICARE_CERT_RE   = re.compile(r"\b(Medicare[\s\-]?(?:certified|approved|participating|enrolled|provider)|Medicaid[\s\-]?(?:certified|approved|participating|enrolled|provider)|dually?\s+certified|Medicare\s+and\s+Medicaid(?:\s+certified)?|CMS[\s\-]?certified|federally\s+certified)\b", re.I)
+OWNERSHIP_RE       = re.compile(r"\b(non[\s\-]?profit|not[\s\-]?for[\s\-]?profit|501\(c\)\(?3\)?|tax[\s\-]?exempt|faith[\s\-]?based|faith\s+affiliated|religiously\s+affiliated|privately[\s\-](?:owned|held|operated)|for[\s\-]?profit|government[\s\-]?(?:owned|run|operated)|county[\s\-]?(?:owned|operated)|community[\s\-]?(?:owned|based|operated)|family[\s\-]?(?:owned|operated|run)|independently[\s\-](?:owned|operated))\b", re.I)
+INSURANCE_RE       = re.compile(r"\b(Medicare|Medicaid|Blue\s*Cross(?:\s*Blue\s*Shield)?|BCBS|Aetna|Cigna|Humana|UnitedHealth(?:care)?|Anthem|Centene|Molina|WellCare|Tri[\s\-]?[Cc]are|TRICARE|Veterans?\s+Affairs|VA\s+benefits?|private\s+(?:pay|insurance)|self[\s\-]?pay|out[\s\-]?of[\s\-]?pocket|managed\s+care|HMO|PPO|long[\s\-]?term\s+care\s+insurance|LTCI)\b", re.I)
+TELEHEALTH_RE      = re.compile(r"\b(telehealth|telemedicine|virtual\s+(?:visit|care|appointment|consult(?:ation)?)|remote\s+(?:care|monitoring|patient\s+monitoring)|RPM|video\s+(?:visit|call|consult(?:ation)?|appointment)|online\s+(?:visit|consult(?:ation)?|care|appointment))\b", re.I)
+DIAGNOSIS_RE       = re.compile(r"\b(cancer|oncolog|dementia|Alzheimer|ALS|amyotrophic\s+lateral\s+sclerosis|COPD|chronic\s+obstructive|congestive\s+heart\s+failure|CHF|heart\s+(?:disease|failure)|stroke|CVA|renal\s+(?:failure|disease)|kidney\s+(?:failure|disease)|liver\s+(?:failure|disease)|HIV|AIDS|Parkinson(?:'s)?|multiple\s+sclerosis|\bMS\b|neurological|respiratory\s+(?:failure|disease)|diabetes|sepsis|wound\s+care|orthopedic|joint\s+replacement|hip\s+(?:fracture|replacement)|cardiac|pulmonary|pediatric|neonatal|maternal|traumatic\s+brain\s+injury|TBI|spinal\s+cord|sickle\s+cell)\b", re.I)
+THERAPY_RE         = re.compile(r"\b(physical\s+therapy|PT\b|occupational\s+therapy|\bOT\b|speech[\s\-]language\s+patholog(?:y|ist)?\b|speech\s+therapy|\bSLP\b|respiratory\s+therapy|\bRT\b|IV\s+therapy|infusion\s+therapy|wound\s+care|cardiac\s+rehab(?:ilitation)?|pulmonary\s+rehab(?:ilitation)?|aquatic\s+therapy|recreational\s+therapy|music\s+therapy|art\s+therapy|cognitive[\s\-](?:behavioral\s+)?therapy|\bCBT\b|\bDBT\b|dialysis|chemotherapy|radiation\s+therapy|oxygen\s+therapy)\b", re.I)
+SATISFACTION_RE    = re.compile(r"\b(\d{1,3}(?:\.\d)?)\s*%\s*(?:of\s+(?:patients?|families|caregivers?|respondents?|family\s+members?)\s+)?(?:would\s+)?(?:recommend|(?:are\s+)?satisfied|rating|scored?|rated\s+(?:us|the\s+care|their\s+care|our)|agreed?|approved?)", re.I)
+DAILY_RATE_RE      = re.compile(r"\$\s*([\d,]+(?:\.\d{1,2})?)\s*(?:per\s+)?(?:day|daily|night|month|monthly|week|weekly)", re.I)
+STATE_LICENSE_RE   = re.compile(r"\b(?:state\s+(?:license|licens(?:ed|ure)|certification)|license\s+(?:number|no\.?|#)|licensure\s+(?:number|no\.?|#)|facility\s+(?:license|ID|number)|state\s+(?:ID|facility\s+ID))\s*[:#]?\s*([A-Z]{0,3}\d{4,12}[A-Z0-9\-]*)\b", re.I)
+GEOGRAPHIC_SCOPE_RE= re.compile(r"\b(nationwide|national(?:ly)?|statewide|state[\s\-]?wide|locally\s+(?:owned|operated)|family[\s\-]?(?:owned|operated|run)|independently\s+(?:owned|operated)|locally[\s\-]?owned|regional|multi[\s\-]?state|serving\s+\d+\+?\s+states?)\b", re.I)
+SURVEY_DATE_RE     = re.compile(r"(?:last\s+(?:inspected?|surveyed?|inspection|survey)|(?:health\s+)?inspection\s+date|survey\s+(?:date|completed?))\s*[:\-]?\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\w+\s+\d{1,2},?\s+\d{4})", re.I)
+_PRICE_RE          = re.compile(r"[\$£€¥][\s]?[\d,]+(?:\.\d{1,2})?(?:\s*/\s*(?:mo(?:nth)?|yr|year|week|day))?", re.I)
+_PERIOD_RE         = re.compile(r"/\s*(mo(?:nth)?|yr|year|week|day)", re.I)
+_GMAPS_LL_RE       = re.compile(r"(?:@|ll=|query=)(-?\d+\.\d+),\s*(-?\d+\.\d+)", re.I)
+_GMAPS_SRC_RE      = re.compile(r"maps\.google\.com|google\.com/maps", re.I)
+_DAY_MAP = {
+    "monday":"Monday","tuesday":"Tuesday","wednesday":"Wednesday","thursday":"Thursday",
+    "friday":"Friday","saturday":"Saturday","sunday":"Sunday",
+    "mon":"Monday","tue":"Tuesday","wed":"Wednesday","thu":"Thursday",
+    "fri":"Friday","sat":"Saturday","sun":"Sunday",
+}
+_TIME_RE2  = re.compile(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", re.I)
+_RANGE_RE2 = re.compile(r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)[\s\-–]*(?:through|to|-)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)?", re.I)
+
+_SOCIAL_PLATFORMS = [
+    ("facebook",  re.compile(r"facebook\.com/", re.I)),
+    ("twitter",   re.compile(r"(?:twitter|x)\.com/", re.I)),
+    ("instagram", re.compile(r"instagram\.com/", re.I)),
+    ("linkedin",  re.compile(r"linkedin\.com/(?:company|in)/", re.I)),
+    ("youtube",   re.compile(r"youtube\.com/(?:channel|c|@|user)", re.I)),
+    ("tiktok",    re.compile(r"tiktok\.com/@", re.I)),
+    ("yelp",      re.compile(r"yelp\.com/biz/", re.I)),
+]
+
+# ── v4 classifier constants ────────────────────────────────────────────────────
+_CLS_NOISE_EXACT = {
+    'all services','services we provide','our services','what we offer',
+    'hospice care','palliative care','care services','what we do','how we help',
+    'our programs','levels of care','four types of care',
+}
+_CLS_EDITORIAL_RE = re.compile(
+    r'^(a day in|how |what |paying for|who pays|inpatient hospice or|'
+    r'home health (?:care )?or |hospice (?:vs\.?|versus|or |and palliative|'
+    r'glossary|puts the|services covered)|palliative (?:vs\.?|versus|care:)|'
+    r'the \d+ (levels?|types?)|what happens if|understanding |comparing |'
+    r'difference between|guide to |introduction to |download |'
+    r'call .{0,30} to learn|learn if |learn about |find out |'
+    r'covered by |definition$)', re.I)
+_CLS_DOMAIN_RE = re.compile(
+    r'(?i)\b(hospice|palliative|end.of.life|comfort care|bereavement|grief|'
+    r'memory care|dementia|alzheimer|cognitive|skilled nursing|wound care|'
+    r'medication|iv therapy|physical therapy|occupational therapy|speech therapy|'
+    r'music therapy|art therapy|pet therapy|personal care|bathing|grooming|'
+    r'dressing|incontinence|toileting|nutrition|dietary|social work|chaplain|'
+    r'spiritual care|emotional support|fall prevention|emergency response|'
+    r'assisted living|independent living|elder care|adult day|respite care|'
+    r'rehabilitation|rehab|post.acute|diabetes|cardiac care|heart failure|'
+    r'copd|cancer care|oncology|stroke rehab|parkinson|pharmacy|home health|'
+    r'in.home care|home care|wellness program|fitness program|pain management|'
+    r'care plan|care coordination|case management|discharge planning)\b')
+_CLS_SERVICE_WORD_RE = re.compile(
+    r'(?i)\b(care|therapy|services?|support|management|counseling|assistance|'
+    r'coordination|planning|treatment|nursing|monitoring|program|rehabilitation|'
+    r'rehab|living|equipment|supplies|assessment|intervention|consultation|'
+    r'response|prevention|enrichment|activities|telecare|telehealth|'
+    r'inpatient|outpatient|hospice|palliative)\b')
+
+# ── v4 cleaner constants ───────────────────────────────────────────────────────
+_CARE_KEYWORDS_RE = re.compile(
+    r'\b(hospice|palliative|end.of.life|comfort care|memory care|dementia|'
+    r'alzheimer|cognitive|skilled nursing|wound care|medication management|'
+    r'physical therapy|occupational therapy|speech therapy|rehabilitation|rehab|'
+    r'personal care|activities of daily|bathing|grooming|dressing|incontinence|'
+    r'toileting|diabetes|cardiac|heart failure|copd|cancer|oncology|stroke|'
+    r'parkinson|assisted living|independent living|senior (?:care|living)|'
+    r'elder care|long.term care|adult day|respite care|care plan|'
+    r'care coordination|nutrition|dietary|social work|counseling|chaplain|'
+    r'spiritual care|emotional support|fall prevention|emergency response|'
+    r'medical equipment|housekeeping|transportation|pharmacy|home health|'
+    r'home care|wellness|fitness|life enrichment|quality of life)\b', re.I)
+_SVC_NOISE_EXACT = {
+    'all services','services we provide','our services','what we offer',
+    'hospice care','palliative care','care services','what we do','how we help',
+    'our programs','four types of care','services','about','home',
+}
+_SVC_EDITORIAL_RE = _CLS_EDITORIAL_RE
+_TESTI_NAV_RE = re.compile(r'^(read more|learn more|contact|click here|view|see more|find out)', re.I)
+_TEAM_NOISE_EXACT = {
+    'explore by topic','learn more','read more','contact us','about us',
+    'our team','meet our team','staff','team','leadership','management',
+}
+_TEAM_NAV_RE = re.compile(r'^(explore|learn|read|contact|view|see|find|click|get|schedule|request|download|submit|sign up)', re.I)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# V3/V4 EXTRACTION FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _extract_pricing(soup):
+    results, seen = [], set()
+    for card in soup.find_all(class_=re.compile(r"pric|plan|tier|package|subscription", re.I)):
+        name = price = desc = ""
+        h = card.find(re.compile(r"^h[1-6]$"))
+        if h:
+            name = h.get_text(strip=True)
+        p_el = card.find(class_=re.compile(r"price|amount|cost|rate", re.I))
+        price = p_el.get_text(strip=True) if p_el else ""
+        if not price:
+            m = _PRICE_RE.search(card.get_text(" "))
+            if m:
+                price = m.group(0).strip()
+        p_tag = card.find("p")
+        if p_tag:
+            desc = p_tag.get_text(strip=True)[:300]
+        key = (name.lower(), price.lower())
+        if name and price and key not in seen:
+            seen.add(key)
+            pm = _PERIOD_RE.search(price)
+            results.append({"name": name, "price": price, "description": desc,
+                             "period": pm.group(1).lower() if pm else ""})
+    for tbl in soup.find_all("table"):
+        headers = [th.get_text(strip=True).lower() for th in tbl.find_all("th")]
+        pc = next((i for i, h in enumerate(headers) if "price" in h or "cost" in h), None)
+        nc = next((i for i, h in enumerate(headers) if "plan" in h or "name" in h), None)
+        if pc is None:
+            continue
+        for row in tbl.find_all("tr")[1:]:
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            if not cells:
+                continue
+            price = cells[pc] if pc < len(cells) else ""
+            name  = cells[nc] if nc is not None and nc < len(cells) else ""
+            key   = (name.lower(), price.lower())
+            if price and key not in seen:
+                seen.add(key)
+                pm = _PERIOD_RE.search(price)
+                results.append({"name": name, "price": price, "description": "",
+                                 "period": pm.group(1).lower() if pm else ""})
+    return results
+
+
+def _extract_hours_structured(soup, json_ld=None):
+    results, seen = [], set()
+    for item in (json_ld or []):
+        specs = (item or {}).get("openingHoursSpecification") or []
+        if isinstance(specs, dict):
+            specs = [specs]
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            days = spec.get("dayOfWeek") or []
+            if isinstance(days, str):
+                days = [days]
+            opens, closes = spec.get("opens", ""), spec.get("closes", "")
+            for day in days:
+                short = day.split("/")[-1]
+                key = (short, opens, closes)
+                if key not in seen:
+                    seen.add(key)
+                    results.append({"day": short, "opens": opens, "closes": closes})
+    if results:
+        return results
+    for tag in soup.find_all(True, class_=re.compile(r"hour|schedule|timing|opening|business-hour", re.I)):
+        text  = tag.get_text(" ", strip=True)
+        times = _TIME_RE2.findall(text)
+        days  = _RANGE_RE2.findall(text)
+        if times and days:
+            day_str = _DAY_MAP.get(days[0][0].lower(), days[0][0])
+            opens   = times[0] if times else ""
+            closes  = times[1] if len(times) > 1 else ""
+            key = (day_str, opens, closes)
+            if key not in seen:
+                seen.add(key)
+                results.append({"day": day_str, "opens": opens, "closes": closes})
+    return results
+
+
+def _extract_location_from_web(soup, json_ld=None):
+    for item in (json_ld or []):
+        geo = (item or {}).get("geo") or {}
+        if isinstance(geo, dict):
+            lat = geo.get("latitude") or geo.get("lat")
+            lng = geo.get("longitude") or geo.get("lng") or geo.get("long")
+            if lat and lng:
+                try:
+                    return {"lat": float(lat), "lng": float(lng), "source": "schema_org"}
+                except (ValueError, TypeError):
+                    pass
+    for iframe in soup.find_all("iframe", src=True):
+        src = iframe.get("src", "")
+        if _GMAPS_SRC_RE.search(src):
+            m = _GMAPS_LL_RE.search(src)
+            if m:
+                try:
+                    return {"lat": float(m.group(1)), "lng": float(m.group(2)), "source": "maps_iframe"}
+                except (ValueError, TypeError):
+                    pass
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        if _GMAPS_SRC_RE.search(href):
+            m = _GMAPS_LL_RE.search(href)
+            if m:
+                try:
+                    return {"lat": float(m.group(1)), "lng": float(m.group(2)), "source": "maps_link"}
+                except (ValueError, TypeError):
+                    pass
+    return None
+
+
+def _extract_certifications(soup, base_url=""):
+    from urllib.parse import urljoin as _urljoin
+    results, seen = [], set()
+    _cert_kw = re.compile(r"ISO\s*\d{4,5}|BBB|URAC|SOC\s*2|HIPAA|CARF|JCAHO?|TJC|ACHC|CHAP|DNV|NCQA|CAHPS|Leapfrog|CMS\s*(?:star|5[\s\-]?star)|Magnet|AAAHC|certified|accredited|award|badge|licensed|bonded", re.I)
+    _cert_cls = re.compile(r"certif|accredit|award|badge|recogni|honor|partner|affilia|trust|seal", re.I)
+    def _add(name, url="", image=""):
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            results.append({"name": name, "url": url, "image": image})
+    for section in soup.find_all(class_=_cert_cls):
+        for img in section.find_all("img"):
+            alt = img.get("alt", "").strip()
+            src = img.get("src", "").strip()
+            pa  = img.find_parent("a")
+            link = _urljoin(base_url, pa.get("href", "")) if pa else ""
+            if alt and _cert_kw.search(alt):
+                _add(alt, url=link, image=_urljoin(base_url, src) if src else "")
+            elif alt and len(alt) > 2:
+                _add(alt, url=link, image=_urljoin(base_url, src) if src else "")
+        for a in section.find_all("a"):
+            text = a.get_text(strip=True)
+            href = _urljoin(base_url, a.get("href", ""))
+            if text and _cert_kw.search(text):
+                _add(text, url=href)
+    body = soup.get_text(" ", strip=True)
+    for m in _cert_kw.finditer(body):
+        start = max(0, m.start() - 10)
+        snippet = body[start:min(len(body), m.end() + 40)].strip()
+        _add(snippet)
+    return results[:30]
+
+
+def _extract_identity(soup):
+    text = soup.get_text(separator=" ")
+    def _first_int(pat):
+        m = pat.search(text)
+        if m:
+            try:
+                return int(m.group(1).replace(",", ""))
+            except (ValueError, IndexError):
+                pass
+        return None
+    def _all_g1(pat): return sorted({m.group(1).strip() for m in pat.finditer(text)})
+    def _all_g0(pat): return sorted({m.group(0).strip() for m in pat.finditer(text)})
+    sat = [float(m.group(1)) for m in SATISFACTION_RE.finditer(text)]
+    rate_m = DAILY_RATE_RE.search(text)
+    survey_m = SURVEY_DATE_RE.search(text)
+    emp_m = EMPLOYEE_RE.search(text)
+    return {
+        "npi":                  _all_g1(NPI_RE),
+        "cms_provider_id":      _all_g1(CMS_ID_RE),
+        "ein":                  sorted(set(EIN_RE.findall(text))),
+        "bed_count":            _first_int(BED_RE),
+        "capacity":             _first_int(CAPACITY_RE),
+        "year_founded":         _first_int(FOUNDED_RE),
+        "employee_count":       emp_m.group(1).replace(",","").strip() if emp_m else None,
+        "star_rating":          _first_int(STAR_RATING_RE),
+        "service_areas":        _all_g1(SERVICE_AREA_RE)[:10],
+        "accreditation_bodies": _all_g0(ACCREDITATION_BODY_RE),
+        "provider_types":       _all_g0(PROVIDER_TYPE_RE),
+        "medicare_cert":        _all_g0(MEDICARE_CERT_RE),
+        "ownership":            _all_g0(OWNERSHIP_RE),
+        "insurance_accepted":   _all_g0(INSURANCE_RE),
+        "telehealth":           _all_g0(TELEHEALTH_RE),
+        "diagnoses":            _all_g0(DIAGNOSIS_RE),
+        "therapies":            _all_g0(THERAPY_RE),
+        "geographic_scope":     _all_g0(GEOGRAPHIC_SCOPE_RE),
+        "satisfaction_pct":     max(sat) if sat else None,
+        "daily_rate":           rate_m.group(0).strip() if rate_m else None,
+        "state_license":        _all_g1(STATE_LICENSE_RE),
+        "survey_date":          survey_m.group(1).strip() if survey_m else None,
+    }
+
+
+def _classify_service(name, desc=""):
+    n = name.strip()
+    if not n or len(n) < 3 or len(n) > 75:
+        return False
+    if "?" in n or ":" in n:
+        return False
+    if n.lower() in _CLS_NOISE_EXACT:
+        return False
+    if _CLS_EDITORIAL_RE.match(n):
+        return False
+    if " " not in n and len(n) < 12:
+        return False
+    has_domain    = bool(_CLS_DOMAIN_RE.search(n))
+    has_indicator = bool(_CLS_SERVICE_WORD_RE.search(n))
+    if not has_domain and desc and not desc.startswith("http"):
+        has_domain = bool(_CLS_DOMAIN_RE.search(desc[:200]))
+    return has_domain and has_indicator
+
+
+def _clean_services_v4(rows):
+    kept, seen = [], set()
+    for r in rows:
+        name = (r.get("name") or "").strip()
+        desc = (r.get("description") or "").strip()
+        if not name or len(name) < 3 or len(name) > 70:
+            continue
+        if "?" in name or name.lower() in _SVC_NOISE_EXACT:
+            continue
+        if _SVC_EDITORIAL_RE.match(name):
+            continue
+        if name.lower() in seen:
+            continue
+        if not _CARE_KEYWORDS_RE.search(name):
+            desc_text = desc if not desc.startswith("http") else ""
+            if not _CARE_KEYWORDS_RE.search(desc_text):
+                continue
+        seen.add(name.lower())
+        kept.append(r)
+    return kept
+
+
+def _clean_faqs_v4(rows):
+    kept, seen = [], set()
+    _interrog = re.compile(r"^(who|what|when|where|why|how|can|could|do|does|did|is|are|was|were|will|would|should|may|might|which|have|has|am)\b", re.I)
+    _noise = {"frequently asked questions","faqs","faq","questions","q&a","common questions"}
+    for r in rows:
+        q = (r.get("question") or r.get("q") or "").strip()
+        a = (r.get("answer")   or r.get("a") or "").strip()
+        if not q or q.lower() in _noise or len(a) < 20:
+            continue
+        if "?" not in q and not _interrog.match(q):
+            continue
+        if q.lower() in seen:
+            continue
+        seen.add(q.lower())
+        kept.append(r)
+    return kept
+
+
+def _clean_testimonials_v4(rows):
+    kept, seen = [], set()
+    for r in rows:
+        txt = (r.get("quote") or r.get("text") or "").strip()
+        if not txt or len(txt) < 40 or _TESTI_NAV_RE.match(txt):
+            continue
+        if txt.lower() in seen:
+            continue
+        seen.add(txt.lower())
+        kept.append(r)
+    return kept
+
+
+def _clean_team_v4(rows):
+    kept, seen = [], set()
+    for r in rows:
+        name  = (r.get("name") or "").strip()
+        title = (r.get("title") or r.get("role") or "").strip()
+        bio   = (r.get("bio")   or r.get("description") or "").strip()
+        image = (r.get("image") or r.get("photo_url") or "").strip()
+        if not name or name.lower() in _TEAM_NOISE_EXACT:
+            continue
+        if _TEAM_NAV_RE.match(name) or len(name) > 60:
+            continue
+        if " " not in name and not title and not bio and not image:
+            continue
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        kept.append(r)
+    return kept
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # WEBSITE EXTRACTION — parsing helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -418,11 +811,16 @@ def _parse_soup(soup, existing_phone="") -> dict:
         "web_vision":           _find_section(soup, "vision"),
         "web_description":      _extract_description(soup),
         "web_amenities":        json.dumps(_extract_amenities(soup), ensure_ascii=False),
-        "web_special_services": json.dumps(_extract_special_services(soup), ensure_ascii=False),
-        "web_faqs":             json.dumps(_extract_faqs(soup), ensure_ascii=False),
-        "web_team":             json.dumps(_extract_team(soup), ensure_ascii=False),
-        "web_testimonials":     json.dumps(_extract_testimonials(soup), ensure_ascii=False),
+        "web_special_services": json.dumps(_clean_services_v4(_extract_special_services(soup)), ensure_ascii=False),
+        "web_faqs":             json.dumps(_clean_faqs_v4(_extract_faqs(soup)), ensure_ascii=False),
+        "web_team":             json.dumps(_clean_team_v4(_extract_team(soup)), ensure_ascii=False),
+        "web_testimonials":     json.dumps(_clean_testimonials_v4(_extract_testimonials(soup)), ensure_ascii=False),
         "web_seo_keywords":     json.dumps(_extract_seo_keywords(soup, page_text), ensure_ascii=False),
+        "web_pricing":          json.dumps(_extract_pricing(soup), ensure_ascii=False),
+        "web_hours_structured": json.dumps(_extract_hours_structured(soup), ensure_ascii=False),
+        "web_certifications":   json.dumps(_extract_certifications(soup), ensure_ascii=False),
+        "web_identity":         json.dumps(_extract_identity(soup), ensure_ascii=False),
+        "_web_location":        _extract_location_from_web(soup),
         "_page_text_len":       len(page_text),
     }
 
@@ -435,16 +833,28 @@ def _merge_results(results: list) -> dict:
         "web_amenities": "[]", "web_special_services": "[]",
         "web_faqs": "[]", "web_team": "[]",
         "web_testimonials": "[]", "web_seo_keywords": "[]",
+        "web_pricing": "[]", "web_hours_structured": "[]",
+        "web_certifications": "[]", "web_identity": "{}",
+        "web_location_lat": "", "web_location_lng": "", "web_location_source": "",
     }
     all_emails, all_phones, all_social = set(), set(), set()
     all_amenities, all_services, all_faqs = [], [], []
     all_team, all_testimonials, all_keywords = [], [], []
+    all_pricing, all_hours, all_certs = [], [], []
 
     for r in results:
         for f in ("web_facility_name", "web_fax", "web_about",
-                  "web_mission", "web_vision", "web_description"):
+                  "web_mission", "web_vision", "web_description", "web_identity"):
             if not merged[f] and r.get(f):
                 merged[f] = r[f]
+
+        # location: take first found from web
+        if not merged["web_location_lat"] and r.get("_web_location"):
+            loc = r["_web_location"]
+            merged["web_location_lat"]    = str(loc.get("lat", ""))
+            merged["web_location_lng"]    = str(loc.get("lng", ""))
+            merged["web_location_source"] = loc.get("source", "")
+
         all_emails.update(e for e in r.get("web_email", "").split("; ") if e)
         all_phones.update(p for p in r.get("web_extra_phones", "").split("; ") if p)
         all_social.update(s for s in r.get("web_social", "").split("; ") if s)
@@ -452,11 +862,7 @@ def _merge_results(results: list) -> dict:
         def _extend(target, key, dedup_field="name"):
             try:
                 items = json.loads(r.get(key, "[]") or "[]")
-                seen_keys = set()
-                for x in target:
-                    k = x.get(dedup_field) if isinstance(x, dict) and dedup_field else x
-                    if k:
-                        seen_keys.add(k)
+                seen_keys = {(x.get(dedup_field) if isinstance(x, dict) and dedup_field else x) for x in target if x}
                 for item in items:
                     k = item.get(dedup_field) if isinstance(item, dict) and dedup_field else item
                     if k and k not in seen_keys:
@@ -466,10 +872,13 @@ def _merge_results(results: list) -> dict:
                 pass
 
         _extend(all_amenities,    "web_amenities",        "name")
-        _extend(all_services,     "web_special_services", "")
+        _extend(all_services,     "web_special_services", "name")
         _extend(all_faqs,         "web_faqs",             "question")
         _extend(all_team,         "web_team",             "name")
         _extend(all_testimonials, "web_testimonials",     "quote")
+        _extend(all_pricing,      "web_pricing",          "name")
+        _extend(all_hours,        "web_hours_structured", "day")
+        _extend(all_certs,        "web_certifications",   "name")
 
         try:
             for kw in json.loads(r.get("web_seo_keywords", "[]") or "[]"):
@@ -487,6 +896,9 @@ def _merge_results(results: list) -> dict:
     merged["web_team"]             = json.dumps(all_team[:20],         ensure_ascii=False)
     merged["web_testimonials"]     = json.dumps(all_testimonials[:20], ensure_ascii=False)
     merged["web_seo_keywords"]     = json.dumps(all_keywords[:80],     ensure_ascii=False)
+    merged["web_pricing"]          = json.dumps(all_pricing[:20],      ensure_ascii=False)
+    merged["web_hours_structured"] = json.dumps(all_hours,             ensure_ascii=False)
+    merged["web_certifications"]   = json.dumps(all_certs[:30],        ensure_ascii=False)
     return merged
 
 
@@ -1035,6 +1447,9 @@ def scrape_website_sync(url: str, existing_phone: str = "",
         "web_amenities": "[]", "web_special_services": "[]",
         "web_faqs": "[]", "web_team": "[]",
         "web_testimonials": "[]", "web_seo_keywords": "[]",
+        "web_pricing": "[]", "web_hours_structured": "[]",
+        "web_certifications": "[]", "web_identity": "{}",
+        "web_location_lat": "", "web_location_lng": "", "web_location_source": "",
         "web_pages_scraped": "0", "web_extraction_status": "failed",
     }
     if not url:
@@ -1159,18 +1574,14 @@ async def process_city_maps(city_slug: str, facilities: list,
 
 async def process_city_website(city_slug: str, query_slug: str = "assisted_living",
                                web_headless: bool = True):
-    """Reads Phase 2 CSV (falls back to Phase 1), scrapes websites, writes to outputs/extraction/."""
-    phase2_csv = PHASE2_DIR / f"{city_slug}_phase2_{query_slug}.csv"
+    """Reads Phase 1 CSV directly, scrapes websites, writes to outputs/mapsflow/extraction/."""
     phase1_csv = PHASE1_DIR / f"{city_slug}_phase1_{query_slug}.csv"
 
-    if phase2_csv.exists():
-        src_csv = phase2_csv
-    elif phase1_csv.exists():
-        log.info("[%s|web] Phase2 not ready — reading from phase1: %s", city_slug, phase1_csv.name)
-        src_csv = phase1_csv
-    else:
-        log.error("[%s|web] No phase1 or phase2 CSV found for %s", city_slug, query_slug)
+    if not phase1_csv.exists():
+        log.error("[%s|web] Phase1 CSV not found for %s", city_slug, query_slug)
         return
+
+    src_csv = phase1_csv
 
     with open(src_csv, newline="", encoding="utf-8") as f:
         facilities = list(csv.DictReader(f))
@@ -1197,6 +1608,11 @@ async def process_city_website(city_slug: str, query_slug: str = "assisted_livin
             else:
                 web_data = scrape_website_sync("")
             row.update(web_data)
+
+            # lat/lng fallback: use web-extracted location if maps phase didn't get it
+            if not row.get("lat") and web_data.get("web_location_lat"):
+                row["lat"] = web_data["web_location_lat"]
+                row["lng"] = web_data["web_location_lng"]
 
             writer.writerow({f: row.get(f, "") for f in EXTRACTION_FIELDS})
             csv_file.flush()
