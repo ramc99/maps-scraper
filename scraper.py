@@ -22,7 +22,8 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 OUTPUT_DIR   = Path(__file__).parent / "outputs"
-PHASE1_DIR   = OUTPUT_DIR / "phase1"
+MAPSFLOW_DIR = OUTPUT_DIR / "mapsflow"
+PHASE1_DIR   = MAPSFLOW_DIR / "phase1"
 
 QUERY_TYPES = [
     "assisted living",
@@ -382,7 +383,7 @@ async def scrape_query(p, city: str, query_type: str, headless: bool, seen_urls:
     Writes results to its own CSV: {city_slug}_phase1_{query_slug}.csv
     """
     state    = CITY_STATES.get(city, "")
-    query    = f"{query_type} in {city}, {state}, USA" if state else f"{query_type} in {city}, USA"
+    query    = f"{query_type} {city} {state} USA" if state else f"{query_type} {city} USA"
     c_slug   = city_slug(city)
     q_slug   = query_slug(query_type)
     csv_path = PHASE1_DIR / f"{c_slug}_phase1_{q_slug}.csv"
@@ -462,8 +463,7 @@ async def scrape_city(p, city: str, headless: bool, seen_urls: set,
 
 
 async def scrape(headless: bool = True, queue: asyncio.Queue = None, concurrency: int = 2):
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    PHASE1_DIR.mkdir(exist_ok=True)
+    PHASE1_DIR.mkdir(parents=True, exist_ok=True)
     seen_urls = set()
     sem = asyncio.Semaphore(concurrency)
 

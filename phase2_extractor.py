@@ -38,14 +38,14 @@ log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 OUTPUT_DIR     = Path(__file__).parent / "outputs"
-PHASE1_DIR     = OUTPUT_DIR / "phase1"
-PHASE2_DIR     = OUTPUT_DIR / "phase2"
-EXTRACTION_DIR = OUTPUT_DIR / "extraction"
+MAPSFLOW_DIR   = OUTPUT_DIR / "mapsflow"
+PHASE1_DIR     = MAPSFLOW_DIR / "phase1"
+PHASE2_DIR     = MAPSFLOW_DIR / "phase2"
+EXTRACTION_DIR = MAPSFLOW_DIR / "extraction"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 QUERY_SLUGS   = ["assisted_living", "memory_care", "independent_living"]
 MAPS_WORKERS  = 2
-WEB_SEM_SIZE  = 3
 DELAY_MS      = 1000
 MAX_PHOTOS    = 20
 RESTART_EVERY = 10
@@ -89,8 +89,6 @@ EXTRACTION_FIELDS = PHASE2_FIELDS + [
     "web_team", "web_testimonials", "web_seo_keywords",
     "web_pages_scraped", "web_extraction_status",
 ]
-
-FIELDS = PHASE2_FIELDS   # backward-compat alias
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -336,7 +334,7 @@ async def extract_plus_code(page) -> str:
 
 
 async def scrape_maps_detail(page, maps_url: str, name: str) -> dict:
-    data = {f: "" for f in FIELDS}
+    data = {f: "" for f in PHASE2_FIELDS}
     data["name"] = name
     if not maps_url:
         return data
@@ -1134,6 +1132,7 @@ async def process_city_maps(city_slug: str, facilities: list,
                     ("category", "category"), ("address_lane1", "address_lane1"),
                     ("phone", "phone"), ("maps_status", "status"),
                     ("website", "website"), ("maps_url", "maps_url"),
+                    ("lat", "lat"), ("lng", "lng"),
                 ):
                     if not detail.get(dst) and fac.get(src):
                         detail[dst] = fac[src]
@@ -1245,8 +1244,7 @@ def _phase1_work(city_filter: str, limit: int) -> list:
 async def run_maps(headless: bool = True, workers: int = MAPS_WORKERS,
                    city_filter: str = "", limit: int = 0):
     """Phase 2 — Maps detail. Reads phase1 CSVs → writes phase2 CSVs."""
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    PHASE2_DIR.mkdir(exist_ok=True)
+    PHASE2_DIR.mkdir(parents=True, exist_ok=True)
 
     work = []
     for cs, qs, unique in _phase1_work(city_filter, limit):
@@ -1281,8 +1279,7 @@ async def run_website(web_headless: bool = True, workers: int = MAPS_WORKERS,
     """Extraction — website only. Reads phase2 CSVs → writes extraction CSVs."""
     global _WEB_SEM
     _WEB_SEM = asyncio.Semaphore(workers)
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    EXTRACTION_DIR.mkdir(exist_ok=True)
+    EXTRACTION_DIR.mkdir(parents=True, exist_ok=True)
 
     city_slug_filter = _slug(city_filter) if city_filter else ""
     work = []
@@ -1329,6 +1326,97 @@ async def run_website(web_headless: bool = True, workers: int = MAPS_WORKERS,
 
     await asyncio.gather(*[run(cs, qs) for cs, qs in work])
     log.info("Website extraction complete.")
+
+    # After extraction, merge all CSVs → dated good/bad JSON
+    cities = {cs for cs, _ in work}
+    if not cities and city_filter:
+        cities = {_slug(city_filter)}
+    for city_slug in sorted(cities):
+        _merge_and_split(city_slug)
+
+
+def _route_category(category: str):
+    """Map Google Maps category → assisted_living or independent_living bucket."""
+    c = category.lower()
+    if any(x in c for x in ["apartment", "condominium", "retirement community",
+                              "retirement village", "senior citizen"]):
+        return "independent_living"
+    if any(x in c for x in ["assisted living", "memory care", "nursing home", "hospice",
+                              "home health", "adult day", "home care", "aged care",
+                              "foster care"]):
+        return "assisted_living"
+    return None  # irrelevant — goes to bad
+
+
+def _merge_and_split(city_slug: str):
+    """Merge phase1+phase2+extraction CSVs, route by category, write dated good/bad JSON."""
+    import csv as _csv
+    import json as _json
+    from datetime import date as _date
+
+    today = _date.today().strftime("%Y-%m-%d")
+
+    def _is_good(r):
+        return (bool((r.get("website") or "").strip()) and
+                r.get("web_extraction_status", "") in ("success", "partial") and
+                bool((r.get("maps_address") or "").strip()) and
+                bool((r.get("lat") or "").strip()))
+
+    # Merge all query types across all 3 phases, dedup by maps_url
+    seen: dict = {}
+    for query_slug in QUERY_SLUGS:
+        for phase, phase_dir in [("phase1", PHASE1_DIR),
+                                  ("phase2", PHASE2_DIR),
+                                  ("extraction", EXTRACTION_DIR)]:
+            fpath = phase_dir / f"{city_slug}_{phase}_{query_slug}.csv"
+            if not fpath.exists():
+                continue
+            with fpath.open(encoding="utf-8") as fh:
+                for row in _csv.DictReader(fh):
+                    key = (row.get("maps_url") or "").strip()
+                    if not key:
+                        continue
+                    if key not in seen:
+                        seen[key] = {}
+                    for k, v in row.items():
+                        if v and v.strip() and not seen[key].get(k):
+                            seen[key][k] = v.strip()
+
+    if not seen:
+        log.warning("No data found for %s", city_slug)
+        return
+
+    # Route each record by category
+    buckets: dict = {"assisted_living": [], "independent_living": []}
+    bad_all: list = []
+
+    for row in seen.values():
+        bucket = _route_category(row.get("category", ""))
+        if bucket is None:
+            bad_all.append(row)  # irrelevant category → bad
+        elif _is_good(row):
+            buckets[bucket].append(row)
+        else:
+            bad_all.append(row)  # correct category but no website/extraction → bad
+
+    # Write outputs
+    for bucket, good_rows in buckets.items():
+        out_dir = OUTPUT_DIR / today / bucket
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{city_slug}_good.json").write_text(
+            _json.dumps(good_rows, indent=2, ensure_ascii=False), encoding="utf-8")
+        log.info("Good %s/%s → %d records", city_slug, bucket, len(good_rows))
+
+    bad_dir = OUTPUT_DIR / today / "bad"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    (bad_dir / f"{city_slug}_bad.json").write_text(
+        _json.dumps(bad_all, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    total_good = sum(len(v) for v in buckets.values())
+    log.info("Final split %s [%s] → %d good (%d AL / %d IL) / %d bad",
+             city_slug, today, total_good,
+             len(buckets["assisted_living"]), len(buckets["independent_living"]),
+             len(bad_all))
 
 
 async def run_all(headless: bool = True, web_headless: bool = True,
