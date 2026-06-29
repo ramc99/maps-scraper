@@ -367,6 +367,13 @@ _SOCIAL_DOMAINS = (
 )
 _SPAM_EMAILS = {"example@example.com", "email@email.com", "noreply@example.com"}
 
+# Noise patterns that indicate a section is NOT mission/vision content
+_SECTION_NOISE = re.compile(
+    r"\b(upcoming|event|dance|celebrate|register|sign.?up|join us|rsvp|calendar|schedule|"
+    r"entertainment|activities|program|class|workshop)\b",
+    re.I
+)
+
 # UI text fragments that pollute FAQ questions from accordion components
 _UI_NOISE = re.compile(
     r"\s*(open accordion item|close accordion item|expand|collapse|show more|show less|read more|"
@@ -538,23 +545,26 @@ def _extract_social(soup):
 
 
 def _find_section(soup, keyword, min_len=40, limit=800):
-    for tag in soup.find_all(["section", "div", "article"],
-                              id=re.compile(keyword, re.I)):
+    kw_re = re.compile(rf"\b{keyword}\b", re.I)
+
+    def _valid(t):
+        return len(t) > min_len and not _SECTION_NOISE.search(t)
+
+    for tag in soup.find_all(["section", "div", "article"], id=kw_re):
         t = _clean(tag.get_text(" ", strip=True), limit)
-        if len(t) > min_len:
+        if _valid(t):
             return t
-    for tag in soup.find_all(["section", "div", "article"],
-                              class_=re.compile(keyword, re.I)):
+    for tag in soup.find_all(["section", "div", "article"], class_=kw_re):
         t = _clean(tag.get_text(" ", strip=True), limit)
-        if len(t) > min_len:
+        if _valid(t):
             return t
-    for h in soup.find_all(["h1", "h2", "h3", "h4"],
-                            string=re.compile(keyword, re.I)):
-        sib = h.find_next_sibling(["p", "div"])
-        if sib:
-            t = _clean(sib.get_text(" ", strip=True), limit)
-            if len(t) > min_len:
-                return t
+    for h in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if kw_re.search(h.get_text(" ", strip=True)):
+            sib = h.find_next_sibling(["p", "div"])
+            if sib:
+                t = _clean(sib.get_text(" ", strip=True), limit)
+                if _valid(t):
+                    return t
     return ""
 
 
